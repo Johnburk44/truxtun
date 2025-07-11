@@ -1,0 +1,136 @@
+// This is your Prisma schema file
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Organization {
+  id            String          @id @default(uuid())
+  name          String
+  schemaName    String          @unique // Each org gets their own schema
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  users         User[]
+  agents        Agent[]
+  zapierConfigs ZapierConfig[]
+  zapierWebhooks ZapierWebhook[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  name           String?
+  hashedPassword String?
+  role           UserRole     @default(MEMBER)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+model Product {
+  id             String   @id @default(uuid())
+  name           String
+  description    String?
+  specifications Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("products")
+}
+
+model CallTranscript {
+  id           String   @id @default(uuid())
+  title        String
+  participants String[]
+  duration     Int?
+  content      String   @db.Text
+  audioUrl     String?  @map("audio_url")
+  metadata     Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+  embeddings   Json?
+
+  @@map("call_transcripts")
+}
+
+model DocumentPrompt {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  template    String   @db.Text
+  variables   Json?
+  version     Int      @default(1)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("document_prompts")
+}
+
+model ZapierWebhook {
+  id             String       @id @default(cuid())
+  eventType      String
+  payload        Json
+  processed      Boolean      @default(false)
+  error          String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("zapier_webhooks")
+}
+
+model ZapierConfig {
+  id             String       @id @default(cuid())
+  name           String
+  webhookUrl     String       @map("webhook_url")
+  status         String       @default("active") // 'active', 'inactive'
+  metadata       Json?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  @@map("zapier_configs")
+}
+
+model Agent {
+  id             String       @id @default(uuid())
+  name           String
+  type           String       // 'crm', 'meeting', 'scheduler'
+  status         String       // 'active', 'inactive', 'error'
+  config         Json
+  metadata       Json?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@map("agents")
+}
+
+model GptConfiguration {
+  id            String   @id @default(uuid())
+  name          String
+  description   String?
+  systemPrompt  String   @db.Text @map("system_prompt")
+  temperature   Float    @default(0.7)
+  maxTokens     Int      @default(1000) @map("max_tokens")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("gpt_configurations")
+}
