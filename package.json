@@ -3,15 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:server": "node server.cjs",
-    "build": "next build",
-    "start": "NODE_ENV=production node server.js",
-    "lint": "next lint",
-    "test": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "tunnel": "node scripts/start-tunnel.js",
-    "db:seed": "tsx prisma/seed.ts"
+"dev": "ts-node server.ts",
+"build": "next build",
+"start": "NODE_ENV=production node dist/server.js",
+"lint": "next lint",
+"test": "vitest",
+"test:coverage": "vitest run --coverage",
+"tunnel": "node scripts/start-tunnel.js",
+"db:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.9.1",

@@ -1,10 +1,5 @@
-console.log('Starting server script...');
-
-console.log('Starting server script...');
-
-import http from 'node:http';
-import next from 'next';
-import { Server } from 'socket.io';
+import { createServer } from 'node:http';
+import { Server as SocketIOServer } from 'socket.io';
 import { createClient } from '@deepgram/sdk';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai';
@@ -13,54 +8,27 @@ import { ChatOpenAI } from 'langchain/chat_models/openai';
 import { ConversationalRetrievalQAChain } from 'langchain/chains';
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { Document } from 'langchain/document';
+import dotenv from 'dotenv';
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
+// Try to load environment variables from .env.local
+dotenv.config({ path: '.env.local' });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
+// Warn about missing environment variables but don't exit
+if (!process.env.DEEPGRAM_API_KEY) {
+  console.warn('Warning: DEEPGRAM_API_KEY is not set. Transcription will not work.');
+}
 
-const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
-const port = 3000;
+const port = 3001; // Socket.IO server port
 
-try {
-  // Load and verify environment variables
-  const requiredEnvVars = ['DEEPGRAM_API_KEY', 'PINECONE_API_KEY', 'PINECONE_INDEX_NAME'];
-  const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
-  
-  if (missingEnvVars.length > 0) {
-    throw new Error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
-  }
+console.log('Starting Socket.IO server on port:', port);
 
-  console.log('Environment variables loaded successfully');
-  console.log('Starting server with configuration:', { 
-    dev, 
-    hostname, 
-    port,
-    envVarsPresent: requiredEnvVars
-  });
+const httpServer = createServer();
+console.log('Created HTTP server');
 
-  const app = next({ dev, hostname, port });
-  const handler = app.getRequestHandler();
+console.log('Attaching Socket.IO...');
 
-app.prepare().then(() => {
-  console.log('Next.js app prepared, setting up server...');
-
-  const httpServer = http.createServer((req, res) => {
-    if (req.url?.startsWith('/socket.io')) {
-      res.writeHead(400);
-      res.end('Socket.IO endpoint');
-      return;
-    }
-    return handler(req, res);
-  });
-
-  console.log('Created HTTP server, attaching Socket.IO...');
-
-  const io = new Server(httpServer, {
+const io = new SocketIOServer(httpServer, {
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
@@ -69,141 +37,97 @@ app.prepare().then(() => {
     path: '/socket.io/'
   });
 
-  console.log('Socket.IO server created');
+  console.log('Socket.IO server created with configuration:', io.engine.opts);
 
   io.on('connection', (socket) => {
-    console.log('Client connected');
-    
-    let deepgramLive: any = null;
-    let crmContext: any = {};
+    console.log('Client connected:', socket.id);
+    let deepgramLive; // Per-client Deepgram instance
 
-    socket.on('startTranscription', async (data) => {
-      console.log('Starting transcription with context:', data);
-      crmContext = data.crmContext;
-      
-      try {
-        const deepgram = createClient(process.env.DEEPGRAM_API_KEY!);
-        
-        console.log('Setting up Deepgram live transcription...');
-        
-        const dgConnection = deepgram.listen.live({
-          model: 'nova-2',
-          language: 'en-US',
-          smart_format: true,
-          interim_results: true,
-          utterances: true,
-        });
+    socket.on('startTranscription', (context) => {
+      console.log('Starting transcription for client:', socket.id, 'with context:', context);
+      const deepgram = createClient(process.env.DEEPGRAM_API_KEY!);
+      deepgramLive = deepgram.listen.live({
+        model: 'nova-2',
+        language: 'en',
+        smart_format: true,
+        interim_results: true,
+        utterances: true,
+        encoding: 'opus',
+        channels: 1,
+        sample_rate: 48000, // Match common browser mic
+      });
 
-        deepgramLive = dgConnection;
+      deepgramLive.on('open', () => console.log('Deepgram connection open for client:', socket.id));
 
-        dgConnection.addListener('open', () => console.log('Deepgram WebSocket opened'));
-        dgConnection.addListener('error', (err: Error) => console.error('Deepgram error:', err));
-        dgConnection.addListener('close', () => console.log('Deepgram WebSocket closed'));
-        
-        dgConnection.addListener('transcriptReceived', async (data: any) => {
-          console.log('Received raw Deepgram data:', data);
-          const transcript = data?.channel?.alternatives?.[0]?.transcript;
-          if (transcript) {
-            console.log('Processing transcript:', transcript);
-            const enriched = await enrichWithRAG(transcript, crmContext);
-            console.log('Sending enriched transcript to client');
-            socket.emit('transcript', { transcript, enriched });
-          } else {
-            console.log('No transcript in Deepgram response');
-          }
-        });
-      } catch (error) {
-        console.error('Error starting transcription:', error);
-      }
+      deepgramLive.on('transcriptReceived', async (data) => {
+        const transcript = data.channel?.alternatives?.[0]?.transcript;
+        if (transcript) {
+          console.log('Transcript received:', transcript);
+          const enriched = await enrichWithRAG(transcript, context.crmContext);
+          socket.emit('transcript', { transcript, enriched });
+        }
+      });
+
+      deepgramLive.on('close', () => console.log('Deepgram connection closed for client:', socket.id));
+      deepgramLive.on('error', (error) => console.error('Deepgram error for client:', socket.id, error));
     });
 
-    socket.on('audioChunk', async (audioData) => {
-      console.log('Received audio chunk, size:', audioData.size);
-      if (deepgramLive) {
-        try {
-          deepgramLive.send(audioData);
-          console.log('Sent audio chunk to Deepgram');
-        } catch (error) {
-          console.error('Error processing audio:', error);
-        }
+    socket.on('audioChunk', (audioData) => {
+      if (deepgramLive && deepgramLive.getReadyState() === 1) {
+        console.log('Sending audio chunk to Deepgram');
+        deepgramLive.send(audioData);
       } else {
-        console.warn('No active Deepgram connection');
+        console.log('Ignoring late audio chunk - session closed');
+        // No socket.emit('error') for this case
       }
     });
 
     socket.on('stopTranscription', () => {
-      console.log('Stopping transcription');
       if (deepgramLive) {
+        console.log('Stopping transcription for client:', socket.id);
         deepgramLive.finish();
-        deepgramLive = null;
       }
     });
 
     socket.on('disconnect', () => {
-      console.log('Client disconnected');
+      console.log('Client disconnected:', socket.id);
       if (deepgramLive) {
         deepgramLive.finish();
-        deepgramLive = null;
       }
     });
   });
 
-  httpServer.listen(port, hostname, () => {
-    console.log(`> Server listening on http://${hostname}:${port}`);
-    console.log('> Socket.IO server ready for connections');
-  });
+console.log('Attempting to start server...');
+httpServer.listen(port, hostname, () => {
+  console.log(`> Server listening on http://${hostname}:${port}`);
+  console.log('> Socket.IO server ready for connections');
+});
 
-  httpServer.on('error', (err) => {
-    console.error('Server error:', err);
-    process.exit(1);
-  });
-
-  // Keep the process alive
-  process.stdin.resume();
-  console.log('Server is running. Press Ctrl+C to stop.');
-}).catch(error => {
-  console.error('Failed to start server:', error);
+httpServer.on('error', (err) => {
+  console.error('Server error:', err);
   process.exit(1);
 });
-} catch (error) {
-  console.error('Server initialization error:', error);
-  process.exit(1);
-}
 
-async function enrichWithRAG(transcript: string, crmContext: any) {
-  const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
-  const index = pc.index(process.env.PINECONE_INDEX_NAME || 'truxtun-sales');
+// RAG functions (typed for TS)
+async function enrichWithRAG(transcript: string, crmContext: any): Promise<string> {
+  try {
+    const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
+    const index = pc.index(process.env.PINECONE_INDEX_NAME || 'truxtun-sales');
 
-  const embeddings = new OpenAIEmbeddings({ modelName: 'text-embedding-3-small' });
-  const vectorStore = await PineconeStore.fromExistingIndex(embeddings, { pineconeIndex: index });
+    const embeddings = new OpenAIEmbeddings({ modelName: 'text-embedding-3-small' });
+    const vectorStore = await PineconeStore.fromExistingIndex(embeddings, { pineconeIndex: index });
 
-  const model = new ChatOpenAI({ modelName: 'gpt-4-turbo-preview' });
-  const chain = ConversationalRetrievalQAChain.fromLLM(model, vectorStore.asRetriever(), { returnSourceDocuments: true });
+    const model = new ChatOpenAI({ modelName: 'gpt-4o-mini' });
+    const chain = ConversationalRetrievalQAChain.fromLLM(model, vectorStore.asRetriever(), { returnSourceDocuments: true });
 
-  const response = await chain.call({
-    question: `Enrich this sales transcript with buyer intent, deal stage from CRM: ${transcript}. Context: ${JSON.stringify(crmContext)}`,
-    chat_history: [],
-  });
+    const response = await chain.call({
+      question: `Enrich this sales transcript with buyer intent, deal stage from CRM: ${transcript}. Context: ${JSON.stringify(crmContext)}`,
+      chat_history: [],
+    });
 
-  return response.text;
-}
-
-async function upsertSampleData() {
-  const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
-  const index = pc.index(process.env.PINECONE_INDEX_NAME || 'truxtun-sales');
-
-  const embeddings = new OpenAIEmbeddings({ modelName: 'text-embedding-3-small' });
-
-  const sampleDocs = [
-    new Document({ pageContent: 'Buyer persona: CTO in fintech, focused on ROI and security.', metadata: { source: 'CRM' } }),
-    new Document({ pageContent: 'Deal stage: Discovery - Discussing pain points like pricing pushback.', metadata: { source: 'History' } }),
-    new Document({ pageContent: 'Common objections: Security compliance, integration complexity.', metadata: { source: 'Sales' } }),
-    new Document({ pageContent: 'Value props: 30% cost reduction, 2x efficiency gain.', metadata: { source: 'Marketing' } })
-  ];
-
-  const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 500, chunkOverlap: 50 });
-  const splitDocs = await splitter.splitDocuments(sampleDocs);
-
-  await PineconeStore.fromDocuments(splitDocs, embeddings, { pineconeIndex: index });
-  console.log('Sample data upserted!');
+    return response.text;
+  } catch (error) {
+    console.error('RAG error:', error);
+    return 'Enrichment failed - check server logs';
+  }
 }

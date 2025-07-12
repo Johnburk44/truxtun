@@ -95,17 +95,16 @@ export default function DashboardPage() {
   }, []);
 
   const stopCall = useCallback(() => {
-    console.log('Stopping call...');
-    if (recorderRef.current) {
+    console.log('Stopping call...', { hasRecorder: !!recorderRef.current, hasSocket: !!socketRef.current });
+    if (recorderRef.current && socketRef.current) {
+      recorderRef.current.ondataavailable = null; // Stop further emits
       recorderRef.current.stop();
+      const tracks = recorderRef.current.stream.getTracks();
+      tracks.forEach(track => track.stop());
+      recorderRef.current = null;
+      setIsRecording(false);
+      socketRef.current.emit('stopTranscription');
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    socketRef.current?.emit('stopTranscription');
-
-    setIsRecording(false);
   }, []);
 
   const startCall = useCallback(async () => {
