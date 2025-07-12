@@ -17,15 +17,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     console.log('Setting up WebSocket connection...');
-    const socket = io('http://localhost:3001', {
-
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-    });
+    const socket = io('http://localhost:3001');
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -143,13 +135,18 @@ export default function DashboardPage() {
         audioBitsPerSecond: 128000
       });
 
-      recorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size > 0) {
-          console.log('Audio chunk available - size:', event.data.size, 'type:', event.data.type);
-          // Convert Blob to ArrayBuffer before sending
-          const arrayBuffer = await event.data.arrayBuffer();
-          console.log('Converted to ArrayBuffer - size:', arrayBuffer.byteLength);
-          socketRef.current?.emit('audioChunk', arrayBuffer);
+      recorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0 && socketRef.current) {
+          const reader = new FileReader();
+          reader.readAsArrayBuffer(event.data);
+          reader.onloadend = () => {
+            if (reader.result instanceof ArrayBuffer) {
+              console.log('Sending ArrayBuffer chunk - size:', reader.result.byteLength);
+              socketRef.current?.emit('audioChunk', reader.result);
+            } else {
+              console.error('Failed to convert audio chunk to ArrayBuffer');
+            }
+          };
         }
       };
 
