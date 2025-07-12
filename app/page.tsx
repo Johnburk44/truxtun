@@ -9,6 +9,7 @@ export default function DashboardPage() {
   const [transcript, setTranscript] = useState<string>('');
   const [enriched, setEnriched] = useState<string>('');
   const [isConnected, setIsConnected] = useState(false);
+  const [isTranscriptionReady, setIsTranscriptionReady] = useState(false);
   const [error, setError] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -17,13 +18,27 @@ export default function DashboardPage() {
 
   useEffect(() => {
     console.log('Setting up WebSocket connection...');
-    const socket = io('http://localhost:3001');
+    const socket = io('http://localhost:3001', {
+      transports: ['polling', 'websocket']
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('Connected to Socket.IO server');
+      console.log('Connected to server');
       setIsConnected(true);
+    });
+
+    socket.on('ready', (data) => {
+      console.log('Transcription ready:', data);
+      setIsTranscriptionReady(true);
       setError('');
+      
+      // Start recording only after transcription is ready
+      if (recorderRef.current && !recorderRef.current.state.includes('recording')) {
+        console.log('Starting recorder now that transcription is ready');
+        recorderRef.current.start(1000);
+        setIsRecording(true);
+      }
     });
 
     socket.on('connect_error', (error) => {
@@ -95,17 +110,19 @@ export default function DashboardPage() {
   }, []);
 
   const stopCall = useCallback(() => {
-    console.log('Stopping call...', { hasRecorder: !!recorderRef.current, hasSocket: !!socketRef.current });
-    if (recorderRef.current && socketRef.current) {
-      recorderRef.current.ondataavailable = null; // Stop further emits
+    console.log('Stopping call...', { hasRecorder: !!recorderRef.current, hasSocket: !!socketRef.current, isTranscriptionReady });
+    if (recorderRef.current && recorderRef.current.state === 'recording') {
+      console.log('Stopping recorder...');
       recorderRef.current.stop();
       const tracks = recorderRef.current.stream.getTracks();
       tracks.forEach(track => track.stop());
-      recorderRef.current = null;
-      setIsRecording(false);
+    }
+    if (socketRef.current) {
       socketRef.current.emit('stopTranscription');
     }
-  }, []);
+    setIsTranscriptionReady(false);
+    setIsRecording(false);
+  }, [isTranscriptionReady]);
 
   const startCall = useCallback(async () => {
     console.log('Starting call...', { isConnected, hasSocket: !!socketRef.current });
@@ -122,6 +139,7 @@ export default function DashboardPage() {
     setError('');
     setTranscript('');
     setEnriched('');
+    setIsTranscriptionReady(false);
 
     try {
       console.log('Requesting mic access...');
@@ -130,28 +148,26 @@ export default function DashboardPage() {
       console.log('Mic access granted, setting up recorder...');
 
       recorderRef.current = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
+        mimeType: 'audio/webm',
         audioBitsPerSecond: 128000
       });
 
+      // Set up data handling first
       recorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0 && socketRef.current) {
+        if (event.data.size > 0 && isTranscriptionReady) {
+          console.log('Got audio chunk of size:', event.data.size);
           const reader = new FileReader();
-          reader.readAsArrayBuffer(event.data);
           reader.onloadend = () => {
-            if (reader.result instanceof ArrayBuffer) {
-              console.log('Sending ArrayBuffer chunk - size:', reader.result.byteLength);
-              socketRef.current?.emit('audioChunk', reader.result);
-            } else {
-              console.error('Failed to convert audio chunk to ArrayBuffer');
+            const arrayBuffer = reader.result;
+            if (arrayBuffer instanceof ArrayBuffer && socketRef.current) {
+              console.log('Sending ArrayBuffer chunk - size:', arrayBuffer.byteLength);
+              socketRef.current.emit('audioChunk', arrayBuffer);
             }
           };
+          reader.readAsArrayBuffer(event.data);
+        } else if (!isTranscriptionReady) {
+          console.log('Skipping audio chunk - transcription not ready');
         }
-      };
-
-      recorderRef.current.onstart = () => {
-        console.log('Recorder started successfully');
-        setIsRecording(true);
       };
 
       recorderRef.current.onerror = (err: Event) => {
@@ -164,11 +180,11 @@ export default function DashboardPage() {
         setIsRecording(false);
       };
 
-      // Start recording and emit startTranscription event
+      // Emit startTranscription and wait for ready event
+      console.log('Requesting transcription start...');
       socketRef.current?.emit('startTranscription', {
         crmContext: { dealStage: 'Discovery' }
       });
-      recorderRef.current.start(250);
     } catch (err) {
       console.error('Start call error:', err);
       setError('Error accessing microphone or starting recorder: ' + (err as Error).message);
@@ -202,7 +218,7 @@ export default function DashboardPage() {
             </button>
             <button
               onClick={stopCall}
-              disabled={!isConnected || !isRecording}
+              disabled={!isRecording}
               className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               Stop Call
