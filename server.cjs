@@ -24,7 +24,11 @@ const port = process.env.PORT || 3001;
 console.log('Starting server on port:', port);
 
 // Create HTTP server
-const server = createServer();
+const server = createServer((req, res) => {
+  console.log('Request URL:', req.url);
+  res.writeHead(404);
+  res.end('Not found');
+});
 
 // Create Socket.IO server
 const io = new Server(server, {
@@ -87,33 +91,15 @@ io.on('connection', (socket) => {
 
     socket.on('audioChunk', async (data) => {
       try {
-        const size = data instanceof ArrayBuffer ? data.byteLength : (data instanceof Blob ? data.size : 'unknown');
-        console.log('Received audio chunk from client:', socket.id, 'size:', size, 'type:', data.constructor.name);
-
         if (!deepgramLive) {
           console.warn('No active Deepgram connection for client:', socket.id);
           socket.emit('error', { message: 'No active transcription session' });
           return;
         }
 
-        // Convert Blob to ArrayBuffer if needed
-        let audioBuffer;
-        if (data instanceof Blob) {
-          const reader = new FileReader();
-          audioBuffer = await new Promise((resolve, reject) => {
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsArrayBuffer(data);
-          });
-          console.log('Converted Blob to ArrayBuffer, size:', audioBuffer.byteLength);
-        } else if (data instanceof ArrayBuffer) {
-          audioBuffer = data;
-          console.log('Using ArrayBuffer directly, size:', audioBuffer.byteLength);
-        } else {
-          console.warn('Unsupported audio data type:', typeof data, data?.constructor?.name);
-          socket.emit('error', { message: 'Invalid audio format' });
-          return;
-        }
+        // Convert Buffer to Uint8Array
+        const audioBuffer = Buffer.from(data);
+        console.log('Received audio chunk from client:', socket.id, 'size:', audioBuffer.length);
 
         try {
           await deepgramLive.send(audioBuffer);
