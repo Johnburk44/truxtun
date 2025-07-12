@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const socket = io('http://localhost:3001');
+
+            socket.on('connect', () => {
+                console.log('Connected to server');
+                document.getElementById('status').textContent = 'Connected';
+                
+                // Send test audio chunk
+                setInterval(() => {
+                    console.log('Sending audio chunk...');
+                    socket.emit('audioChunk', new Uint8Array(1024).fill(1));
+                }, 2000);
+            });
+
+            socket.on('transcript', (data) => {
+                console.log('Received transcript:', data);
+                document.getElementById('transcript').textContent = JSON.stringify(data, null, 2);
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from server');
+                document.getElementById('status').textContent = 'Disconnected';
+            });
+        });
+    </script>
+</head>
+<body>
+    <h1>Socket.IO Test</h1>
+    <p>Status: <span id="status">Connecting...</span></p>
+    <h2>Latest Transcript:</h2>
+    <pre id="transcript">Waiting for data...</pre>
+</body>
+</html>
